@@ -6,9 +6,9 @@ export function fooGood([a, b]: any[] = [1, 2]): number {
   return 2;
 }
 
-export const fooGood2 = ({a, b}: object = { a: 1, b: 2 }): number => {
-  return 2;
-}
+export const fooGood2 = ({a, b}: object = { a: 1, b: 2 }): void => {}
+export const fooGood3 = ({a: [b = 1, ...rest1], c = 2, ...rest2}: object): void => {}
+
 
 // Incorrect
 export function fnDeclBad<T>(p: T = [], rParam: T = "", r2: T): void { }

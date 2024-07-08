@@ -48,10 +48,6 @@ impl<'a> IsolatedDeclarations<'a> {
         is_remaining_params_have_required: bool,
     ) -> Option<FormalParameter<'a>> {
         let pattern = &param.pattern;
-        if pattern.type_annotation.is_none() && pattern.kind.is_destructuring_pattern() {
-            self.error(parameter_must_have_explicit_type(param.span));
-            return None;
-        }
 
         let is_assignment_pattern = pattern.kind.is_assignment_pattern();
         let mut pattern =
@@ -60,10 +56,19 @@ impl<'a> IsolatedDeclarations<'a> {
             } else {
                 self.ast.copy(&param.pattern)
             };
+        
+        if pattern.type_annotation.is_none() && pattern.kind.is_destructuring_pattern() {
+            // println!("{:#?}", pattern);
+            self.error(parameter_must_have_explicit_type(param.span));
+            return None;
+        }
 
-        if is_assignment_pattern || pattern.type_annotation.is_none() {
-            let type_annotation = pattern
-                .type_annotation
+        let mut type_annotation = pattern.type_annotation;
+        let mut optional = pattern.optional;
+        let kind = self.transform_binding_pattern_kind(&pattern.kind);
+
+        if is_assignment_pattern || type_annotation.is_none() {
+            type_annotation = type_annotation
                 .as_ref()
                 .map(|type_annotation| self.ast.copy(&type_annotation.type_annotation))
                 .or_else(|| {
@@ -97,16 +102,55 @@ impl<'a> IsolatedDeclarations<'a> {
 
                     self.ast.ts_type_annotation(SPAN, ts_type)
                 });
-
-            pattern = self.ast.binding_pattern(
-                self.ast.copy(&pattern.kind),
-                type_annotation,
-                // if it's assignment pattern, it's optional
-                pattern.optional || (!is_remaining_params_have_required && is_assignment_pattern),
-            );
+            optional = optional || (!is_remaining_params_have_required && is_assignment_pattern)
         }
 
+        pattern = self.ast.binding_pattern(kind, type_annotation, optional);
+
         Some(self.ast.formal_parameter(param.span, pattern, None, false, false, self.ast.new_vec()))
+    }
+
+    pub fn transform_binding_pattern_kind(
+        &self,
+        kind: &BindingPatternKind<'a>,
+    ) -> BindingPatternKind<'a> {
+        match kind {
+            BindingPatternKind::ObjectPattern(pattern) => {
+                let properties =
+                    self.ast.new_vec_from_iter(pattern.properties.iter().map(|prop| {
+                        let value = self.ast.binding_pattern(
+                            self.transform_binding_pattern_kind(&prop.value.kind),
+                            None,
+                            false,
+                        );
+                        self.ast.binding_property(
+                            prop.span,
+                            self.ast.copy(&prop.key),
+                            value,
+                            prop.shorthand,
+                            prop.computed,
+                        )
+                    }));
+                let rest = pattern.rest.as_ref().map(|rest| self.ast.copy(rest));
+                self.ast.object_pattern(pattern.span, properties, rest)
+            }
+            BindingPatternKind::ArrayPattern(pattern) => {
+                let elements = self.ast.new_vec_from_iter(pattern.elements.iter().map(|elem| {
+                    if let Some(elem) = elem {
+                        let kind = self.transform_binding_pattern_kind(&elem.kind);
+                        Some(self.ast.binding_pattern(kind, None, elem.optional))
+                    } else {
+                        None
+                    }
+                }));
+                let rest = pattern.rest.as_ref().map(|rest| self.ast.copy(rest));
+                self.ast.array_pattern(pattern.span, elements, rest)
+            }
+            BindingPatternKind::BindingIdentifier(_) => self.ast.copy(kind),
+            BindingPatternKind::AssignmentPattern(pattern) => {
+                self.transform_binding_pattern_kind(&pattern.left.kind)
+            },
+        }
     }
 
     pub fn transform_formal_parameters(
